@@ -334,6 +334,8 @@ pub fn vortex_file::VortexWriteOptions::exclude_dtype(self) -> Self
 
 pub fn vortex_file::VortexWriteOptions::new(session: vortex_session::VortexSession) -> Self
 
+pub fn vortex_file::VortexWriteOptions::strategy(&self) -> &alloc::sync::Arc<dyn vortex_layout::strategy::LayoutStrategy>
+
 pub fn vortex_file::VortexWriteOptions::with_file_statistics(self, file_statistics: alloc::vec::Vec<vortex_array::expr::stats::Stat>) -> Self
 
 pub fn vortex_file::VortexWriteOptions::with_strategy(self, strategy: alloc::sync::Arc<dyn vortex_layout::strategy::LayoutStrategy>) -> Self

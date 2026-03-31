@@ -55,6 +55,26 @@ public interface VortexWriter extends AutoCloseable {
     void writeBatchFfi(long arrowArrayAddr, long arrowSchemaAddr) throws IOException;
 
     /**
+     * Returns the number of bytes written to the file so far.
+     * <p>
+     * This can be used to estimate the current file size for rolling to a new file
+     * when a target size is reached.
+     *
+     * @return the number of bytes written so far
+     */
+    long bytesWritten();
+
+    /**
+     * Returns the number of bytes currently buffered by the layout writers
+     * but not yet flushed to the file.
+     * <p>
+     * For a more accurate file size estimate, use {@code bytesWritten() + bufferedBytes()}.
+     *
+     * @return the number of buffered bytes
+     */
+    long bufferedBytes();
+
+    /**
      * Closes the writer and finalizes the Vortex file.
      * <p>
      * This method must be called to ensure the file is properly written

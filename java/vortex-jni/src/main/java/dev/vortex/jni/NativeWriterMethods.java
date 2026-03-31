@@ -52,4 +52,20 @@ public final class NativeWriterMethods {
      * @throws RuntimeException if the writer fails to close
      */
     public static native void close(long writerPtr);
+
+    /**
+     * Returns the number of bytes written to the file so far.
+     *
+     * @param writerPtr the native writer pointer
+     * @return the number of bytes written
+     */
+    public static native long bytesWritten(long writerPtr);
+
+    /**
+     * Returns the number of bytes currently buffered by the layout writers.
+     *
+     * @param writerPtr the native writer pointer
+     * @return the number of buffered bytes
+     */
+    public static native long bufferedBytes(long writerPtr);
 }

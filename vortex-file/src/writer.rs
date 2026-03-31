@@ -113,6 +113,11 @@ impl VortexWriteOptions {
         self.file_statistics = file_statistics;
         self
     }
+
+    /// Returns a reference to the layout strategy.
+    pub fn strategy(&self) -> &Arc<dyn LayoutStrategy> {
+        &self.strategy
+    }
 }
 
 impl VortexWriteOptions {

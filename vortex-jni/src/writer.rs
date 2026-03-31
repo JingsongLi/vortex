@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright the Vortex contributors
 
+use std::io;
 use std::io::Cursor;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 use arrow_array::RecordBatch;
 use arrow_array::StructArray;
@@ -31,10 +35,12 @@ use vortex::error::vortex_bail;
 use vortex::error::vortex_err;
 use vortex::file::WriteOptionsSessionExt;
 use vortex::file::WriteSummary;
+use vortex::io::IoBuf;
 use vortex::io::VortexWrite;
 use vortex::io::object_store::ObjectStoreWrite;
 use vortex::io::runtime::Task;
 use vortex::io::session::RuntimeSessionExt;
+use vortex::layout::LayoutStrategy;
 use vortex::utils::aliases::hash_map::HashMap;
 
 use crate::SESSION;
@@ -42,6 +48,31 @@ use crate::TOKIO_RUNTIME;
 use crate::errors::JNIError;
 use crate::errors::try_or_throw;
 use crate::object_store::make_object_store;
+
+/// A wrapper around [`VortexWrite`] that counts the number of bytes written.
+struct CountingWrite<W> {
+    inner: W,
+    bytes_written: Arc<AtomicU64>,
+}
+
+impl<W: VortexWrite + Unpin> VortexWrite for CountingWrite<W> {
+    async fn write_all<B: IoBuf>(&mut self, buffer: B) -> io::Result<B> {
+        let len = buffer.as_slice().len() as u64;
+        let result = self.inner.write_all(buffer).await;
+        if result.is_ok() {
+            self.bytes_written.fetch_add(len, Ordering::Relaxed);
+        }
+        result
+    }
+
+    fn flush(&mut self) -> impl Future<Output = io::Result<()>> {
+        self.inner.flush()
+    }
+
+    fn shutdown(&mut self) -> impl Future<Output = io::Result<()>> {
+        self.inner.shutdown()
+    }
+}
 
 /// Native writer around a file writer.
 pub struct NativeWriter {
@@ -52,6 +83,10 @@ pub struct NativeWriter {
     write_schema: DType,
     /// Ingest arrays into the handle.
     sender: mpsc::Sender<VortexResult<ArrayRef>>,
+    /// Counter tracking the number of bytes written to the underlying sink so far.
+    bytes_written: Arc<AtomicU64>,
+    /// The layout strategy, used to query buffered bytes.
+    strategy: Arc<dyn LayoutStrategy>,
 }
 
 impl NativeWriter {
@@ -60,12 +95,26 @@ impl NativeWriter {
         write_schema: DType,
         handle: Task<VortexResult<WriteSummary>>,
         sender: mpsc::Sender<VortexResult<ArrayRef>>,
+        bytes_written: Arc<AtomicU64>,
+        strategy: Arc<dyn LayoutStrategy>,
     ) -> Self {
         Self {
             handle: Some(handle),
             write_schema,
             sender,
+            bytes_written,
+            strategy,
         }
+    }
+
+    /// Returns the number of bytes written to the file so far.
+    pub fn bytes_written(&self) -> u64 {
+        self.bytes_written.load(Ordering::Relaxed)
+    }
+
+    /// Returns the number of bytes currently buffered by the layout writers.
+    pub fn buffered_bytes(&self) -> u64 {
+        self.strategy.buffered_bytes()
     }
 
     pub fn into_raw(self: Box<Self>) -> jlong {
@@ -178,14 +227,29 @@ pub extern "system" fn Java_dev_vortex_jni_NativeWriterMethods_create(
         let w = ArrayStreamAdapter::new(write_schema.clone(), rx);
 
         let (store, _scheme) = make_object_store(&url, &properties)?;
+        let bytes_written = Arc::new(AtomicU64::new(0));
+        let counter = bytes_written.clone();
+        let write_options = SESSION.write_options();
+        let strategy = write_options.strategy().clone();
         let write_handle = SESSION.handle().spawn(async move {
-            let mut write = ObjectStoreWrite::new(store, &path).await?;
-            let summary = SESSION.write_options().write(&mut write, w).await?;
-            write.shutdown().await?;
+            let inner = ObjectStoreWrite::new(store, &path).await?;
+            let mut write = CountingWrite {
+                inner,
+                bytes_written: counter,
+            };
+            let summary = write_options.write(&mut write, w).await?;
+            write.inner.shutdown().await?;
             Ok(summary)
         });
 
-        Ok(Box::new(NativeWriter::new(write_schema, write_handle, tx)).into_raw())
+        Ok(Box::new(NativeWriter::new(
+            write_schema,
+            write_handle,
+            tx,
+            bytes_written,
+            strategy,
+        ))
+        .into_raw())
     })
 }
 
@@ -276,4 +340,32 @@ pub extern "system" fn Java_dev_vortex_jni_NativeWriterMethods_close<'local>(
         writer.close()?;
         Ok(())
     });
+}
+
+/// Returns the number of bytes written to the file so far.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_vortex_jni_NativeWriterMethods_bytesWritten(
+    _env: JNIEnv,
+    _class: JClass,
+    writer_ptr: jlong,
+) -> jlong {
+    if writer_ptr <= 0 {
+        return 0;
+    }
+    let writer = unsafe { NativeWriter::from_ptr(writer_ptr) };
+    writer.bytes_written() as jlong
+}
+
+/// Returns the number of bytes currently buffered by the layout writers.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_vortex_jni_NativeWriterMethods_bufferedBytes(
+    _env: JNIEnv,
+    _class: JClass,
+    writer_ptr: jlong,
+) -> jlong {
+    if writer_ptr <= 0 {
+        return 0;
+    }
+    let writer = unsafe { NativeWriter::from_ptr(writer_ptr) };
+    writer.buffered_bytes() as jlong
 }

@@ -66,6 +66,16 @@ public final class JNIWriter implements VortexWriter, AutoCloseable {
         }
     }
 
+    @Override
+    public long bytesWritten() {
+        return NativeWriterMethods.bytesWritten(ptr.getAsLong());
+    }
+
+    @Override
+    public long bufferedBytes() {
+        return NativeWriterMethods.bufferedBytes(ptr.getAsLong());
+    }
+
     /**
      * Closes the writer and finalizes the Vortex file.
      *
